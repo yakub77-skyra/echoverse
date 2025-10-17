@@ -1,5 +1,9 @@
-streamlit
-torch
-transformers
-ibm-watson
-ibm-cloud-sdk-core
+streamlit>=1.38.0
+torch>=2.2.0
+transformers>=4.44.0
+TTS>=0.22.0
+numpy>=1.26.0
+sentencepiece>=0.2.0
+safetensors>=0.4.3
+protobuf>=4.25.0
+soundfile>=0.12.1

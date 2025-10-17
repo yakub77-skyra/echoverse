@@ -1,19 +1,15 @@
+# echoverse_app.py
+
 import streamlit as st
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
-from ibm_watson import TextToSpeechV1
-from ibm_cloud_sdk_core.authenticators import IAMAuthenticator
 import torch
-import base64
+from TTS.api import TTS
+import tempfile
 import os
 
-# ------------------ CONFIG ------------------
-st.set_page_config(page_title="EchoVerse", layout="wide")
-
-# IBM Watson credentials (replace with your actual keys)
-IBM_TTS_APIKEY = "YOUR_WATSON_TTS_API_KEY"
-IBM_TTS_URL = "https://api.us-south.text-to-speech.watson.cloud.ibm.com"
-
-# Load Granite Model
+# -------------------------------
+# MODEL SETUP
+# -------------------------------
 @st.cache_resource
 def load_granite_model():
     model_path = "ibm-granite/granite-3.3-8b-instruct"
@@ -22,27 +18,35 @@ def load_granite_model():
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         device_map=device,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
     )
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     return model, tokenizer, device
 
 model, tokenizer, device = load_granite_model()
 
-# Initialize Watson TTS
+# -------------------------------
+# OPEN SOURCE TTS SETUP
+# -------------------------------
 @st.cache_resource
-def init_tts():
-    authenticator = IAMAuthenticator(IBM_TTS_APIKEY)
-    tts = TextToSpeechV1(authenticator=authenticator)
-    tts.set_service_url(IBM_TTS_URL)
-    return tts
+def load_tts_model():
+    return TTS("tts_models/en/vctk/vits")
 
-tts = init_tts()
+tts = load_tts_model()
 
-# ------------------ FUNCTIONS ------------------
+# -------------------------------
+# FUNCTION: Tone Rewrite
+# -------------------------------
 def rewrite_text_with_tone(original_text, tone):
-    """Tone-adaptive text rewriting using Granite."""
-    prompt = f"Rewrite the following text in a {tone} tone, keeping the original meaning intact:\n\n{original_text}"
+    prompt = f"""
+You are a professional narrator rewriting text in a {tone.lower()} tone.
+Maintain the original meaning but enhance style, emotion, and readability.
+
+Original Text:
+{original_text}
+
+Rewritten {tone} Version:
+"""
 
     conv = [{"role": "user", "content": prompt}]
     input_ids = tokenizer.apply_chat_template(
@@ -54,69 +58,58 @@ def rewrite_text_with_tone(original_text, tone):
     ).to(device)
 
     set_seed(42)
-    output = model.generate(**input_ids, max_new_tokens=2048)
+    output = model.generate(**input_ids, max_new_tokens=1024)
     rewritten = tokenizer.decode(output[0, input_ids["input_ids"].shape[1]:], skip_special_tokens=True)
     return rewritten.strip()
 
+# -------------------------------
+# FUNCTION: Generate Audio
+# -------------------------------
+def generate_audio(text):
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+        tts.tts_to_file(text=text, file_path=tmp.name)
+        return tmp.name
 
-def text_to_speech(text, voice="en-US_AllisonV3Voice"):
-    """Generate audio narration using IBM Watson TTS."""
-    with open("output.mp3", "wb") as audio_file:
-        audio_file.write(
-            tts.synthesize(
-                text,
-                voice=voice,
-                accept="audio/mp3"
-            ).get_result().content
-        )
-    return "output.mp3"
+# -------------------------------
+# STREAMLIT UI
+# -------------------------------
+st.set_page_config(page_title="EchoVerse - Granite Audiobook Generator", layout="wide")
+st.title("🎧 EchoVerse – Generative AI Audiobook Creator (Granite-Powered)")
 
+st.sidebar.header("Configuration")
+tone = st.sidebar.selectbox("Select Tone:", ["Neutral", "Suspenseful", "Inspiring"])
+st.sidebar.info("All tone rewrites powered by IBM Granite LLM.")
 
-def get_binary_file_downloader_html(bin_file, file_label='File'):
-    with open(bin_file, 'rb') as f:
-        data = f.read()
-    bin_str = base64.b64encode(data).decode()
-    href = f'<a href="data:file/mp3;base64,{bin_str}" download="{os.path.basename(bin_file)}">⬇️ Download {file_label}</a>'
-    return href
+input_mode = st.radio("Input Mode:", ["Paste Text", "Upload .txt File"])
 
-# ------------------ STREAMLIT UI ------------------
-st.title("🎧 EchoVerse – Generative Audiobook Creator")
-st.markdown("Transform your text into expressive, natural-sounding audio with customizable tone and voice.")
-
-st.sidebar.header("⚙️ Settings")
-tone = st.sidebar.selectbox("Select Tone", ["Neutral", "Suspenseful", "Inspiring"])
-voice = st.sidebar.selectbox("Select Voice", ["en-US_AllisonV3Voice", "en-US_MichaelV3Voice", "en-US_LisaV3Voice"])
-
-uploaded_file = st.file_uploader("Upload a .txt file", type=["txt"])
-input_text = ""
-
-if uploaded_file:
-    input_text = uploaded_file.read().decode("utf-8")
+if input_mode == "Paste Text":
+    user_text = st.text_area("Enter your text here:", height=250)
 else:
-    input_text = st.text_area("Or paste your text here:", height=200)
+    uploaded_file = st.file_uploader("Upload a .txt file", type=["txt"])
+    user_text = uploaded_file.read().decode("utf-8") if uploaded_file else ""
 
-if st.button("Generate Audiobook 🎙️"):
-    if not input_text.strip():
-        st.warning("Please provide some text to process.")
+if st.button("🎨 Generate Tone & Audio"):
+    if not user_text.strip():
+        st.warning("Please enter or upload text first.")
     else:
         with st.spinner("Rewriting text using IBM Granite..."):
-            rewritten = rewrite_text_with_tone(input_text, tone)
+            rewritten_text = rewrite_text_with_tone(user_text, tone)
 
-        st.success("✅ Tone adaptation complete!")
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("📝 Original Text")
-            st.text_area("", input_text, height=300)
+            st.subheader("📜 Original Text")
+            st.text_area("Original", user_text, height=400)
         with col2:
-            st.subheader(f"✨ {tone} Version")
-            st.text_area("", rewritten, height=300)
+            st.subheader(f"✨ {tone} Version (Granite LLM)")
+            st.text_area("Rewritten", rewritten_text, height=400)
 
-        with st.spinner("Converting to voice with IBM Watson TTS..."):
-            audio_path = text_to_speech(rewritten, voice)
+        with st.spinner("🎤 Generating voice narration..."):
+            audio_path = generate_audio(rewritten_text)
 
-        st.audio(audio_path)
-        st.markdown(get_binary_file_downloader_html(audio_path, 'Narration (MP3)'), unsafe_allow_html=True)
-        st.success("🎉 Audio narration ready!")
+        st.audio(audio_path, format="audio/mp3")
+        with open(audio_path, "rb") as f:
+            st.download_button("⬇️ Download MP3", f, file_name="EchoVerse_Narration.mp3")
 
-st.markdown("---")
-st.caption("Built with 💡 IBM Granite + Watson TTS + Streamlit | EchoVerse © 2025")
+        os.remove(audio_path)
+
+

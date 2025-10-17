@@ -1,0 +1,5 @@
+streamlit
+torch
+transformers
+ibm-watson
+ibm-cloud-sdk-core
